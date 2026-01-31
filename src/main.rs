@@ -28,11 +28,9 @@ use image::RgbImage;
 use rodio::{Decoder, OutputStream, Sink};
 
 // Standard crate
-use std::env::args;
-use std::error::Error;
 use std::fs::File;
-use std::io::BufReader;
 use std::thread;
+use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn millis() -> u128 {
@@ -48,12 +46,95 @@ fn micros() -> u128 {
     let since_the_epoch = start
         .duration_since(UNIX_EPOCH)
         .expect("time should go forward");
-    since_the_epoch.as_millis()
+    since_the_epoch.as_micros()
+}
+
+struct ImageThreadOptions {
+    disp_w: u32,
+    disp_h: u32,
+    preload: usize,
+    begin: usize,
+    frame_cnt: usize,
+    frame_dir: String,
+}
+
+fn start_img_thread(
+    opts: ImageThreadOptions,
+    tx: channel::Sender<image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>>,
+) -> Result<JoinHandle<()>, std::io::Error> {
+    thread::Builder::new().name("bad_apple_imgs".to_string()).spawn(move || {
+        let mut cur_frame = opts.begin;
+        println!("[IMG Thread]: Started!");
+        'outer: while cur_frame < opts.frame_cnt {
+            let begin_frame = cur_frame;
+            let (begin_ms, mut io_us, mut conv_us, mut decode_us) = (millis(), 0, 0, 0);
+            while tx.len() < opts.preload {
+                let mut last_us;
+                if cur_frame >= opts.frame_cnt {
+                    break;
+                }
+
+                let img_fname = format!("{}/{:03}.jpg", opts.frame_dir, cur_frame + 1);
+
+                // Open and read the image
+                last_us = micros();
+                let img_reader = match ImageReader::open(&img_fname) {
+                    Ok(rdr) => rdr,
+                    Err(err) => {
+                        eprintln!(
+                            "[IMG Thread]: Failed to load frame {} via {}",
+                            cur_frame, img_fname
+                        );
+                        eprintln!("[IMG Thread]: Error: {:?}", err);
+                        break 'outer;
+                    }
+                };
+                io_us += micros() - last_us;
+
+                // Decode the file contents as an image
+                last_us = micros();
+                let img_result = match img_reader.decode() {
+                    Ok(res) => res,
+                    Err(err) => {
+                        eprintln!(
+                            "[IMG Thread]: Failed to decode frame {} via {}",
+                            cur_frame, img_fname
+                        );
+                        eprintln!("[IMG Thread]: Error: {:?}", err);
+                        break 'outer;
+                    }
+                };
+                decode_us += micros() - last_us;
+
+                // Convert the image into a displayable format
+                last_us = micros();
+                let img_send = img_result
+                    .resize_exact(opts.disp_w, opts.disp_h, FilterType::Nearest)
+                    .to_rgb8();
+                conv_us += micros() - last_us;
+
+                tx.send(img_send).expect("[IMG Thread]: Failed to send image through channel?!");
+                cur_frame += 1;
+            }
+            println!(
+                "[IMG Thread]: Loaded frames {} to {}, took {}ms, io {}us, decode {}us, conversion {}us",
+                begin_frame,
+                cur_frame,
+                millis() - begin_ms, io_us, decode_us, conv_us
+            );
+            if tx.len() >= opts.preload {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        println!("[IMG Thread]: Stopped!");
+    })
 }
 
 fn play_audio(frame_dir: String) -> Result<(Sink, OutputStream), String> {
     // Get the output stream
-    let mut stream_handle = match rodio::OutputStreamBuilder::open_default_stream() {
+    let stream_handle = match rodio::OutputStreamBuilder::open_default_stream() {
         Ok(val) => val,
         Err(err) => {
             return Err(format!(
@@ -68,7 +149,7 @@ fn play_audio(frame_dir: String) -> Result<(Sink, OutputStream), String> {
         Err(err) => return Err(format!("Failed to open audio file!\nError: {:?}", err)),
     };
     // Create a sink for the device
-    let sink = rodio::Sink::connect_new(&stream_handle.mixer());
+    let sink = rodio::Sink::connect_new(stream_handle.mixer());
     // Decode and play the sound file
     match Decoder::try_from(file) {
         Ok(source) => stream_handle.mixer().add(source),
@@ -114,7 +195,7 @@ fn main() {
 
     let mut fb = Framebuffer::new("/dev/fb0").unwrap();
     let gfx_mode = Framebuffer::set_kd_mode(KdMode::Graphics);
-    if !gfx_mode.is_ok() {
+    if gfx_mode.is_err() {
         println!("Failed to set graphics mode on framebuffer!");
     }
 
@@ -139,71 +220,17 @@ fn main() {
     let scale_w = gl.get_width() as u32;
     let scale_h = gl.get_height() as u32;
 
-    let frame_dir_clone = frame_dir.clone();
-    let img_handle = thread::spawn(move || {
-        let mut cur_frame = 0;
-        println!("[IMG Thread]: Started!");
-        'outer: while cur_frame < total_frames {
-            let mut begin_frame = cur_frame;
-            let (mut begin_ms, mut io_us, mut conv_us, mut decode_us) = (millis(), 0, 0, 0);
-            while img_tx.len() < preload_frames && cur_frame < total_frames {
-                let mut last_us;
-                let img_fname = format!("{}/{:03}.jpg", frame_dir_clone, cur_frame + 1);
-
-                // Open and read the image
-                last_us = micros();
-                let img_reader = match ImageReader::open(&img_fname) {
-                    Ok(rdr) => rdr,
-                    Err(err) => {
-                        eprintln!(
-                            "[IMG Thread]: Failed to load frame {} via {}",
-                            cur_frame, img_fname
-                        );
-                        eprintln!("[IMG Thread]: Error: {:?}", err);
-                        break 'outer;
-                    }
-                };
-                io_us += micros() - last_us;
-
-                // Decode the file contents as an image
-                last_us = micros();
-                let img_result = match img_reader.decode() {
-                    Ok(res) => res,
-                    Err(err) => {
-                        eprintln!(
-                            "[IMG Thread]: Failed to decode frame {} via {}",
-                            cur_frame, img_fname
-                        );
-                        eprintln!("[IMG Thread]: Error: {:?}", err);
-                        break 'outer;
-                    }
-                };
-                decode_us += micros() - last_us;
-
-                // Convert the image into a displayable format
-                last_us = micros();
-                let img_send = img_result
-                    .resize_exact(scale_w, scale_h, FilterType::Nearest)
-                    .to_rgb8();
-                conv_us += micros() - last_us;
-
-                img_tx
-                    .send(img_send)
-                    .expect("[IMG Thread]: Failed to send image through channel?!");
-                cur_frame += 1;
-            }
-            println!(
-                "[IMG Thread]: Loaded frames {} to {}, took {}ms, io {}us, decode {}us, conversion {}us",
-                begin_frame,
-                cur_frame,
-                millis() - begin_ms, io_us, decode_us, conv_us
-            );
-            if img_tx.len() >= preload_frames {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-        }
-        println!("[IMG Thread]: Stopped!");
-    });
+    let img_handle = start_img_thread(
+        ImageThreadOptions {
+            disp_w: scale_w,
+            disp_h: scale_h,
+            begin: 0,
+            frame_cnt: total_frames,
+            preload: preload_frames,
+            frame_dir: frame_dir.clone(),
+        },
+        img_tx,
+    );
 
     gl.clear(Color565::new(0, 0, 0));
     gl.push_buffer();
@@ -242,7 +269,10 @@ fn main() {
         }
     }
     println!("[GFX Thread]: Stopped!");
-    img_handle.join().unwrap();
+    img_handle
+        .expect("the thread has been built")
+        .join()
+        .unwrap();
     if let Ok((audio_sink, audio_stream)) = audio_result {
         audio_sink.sleep_until_end();
         drop(audio_stream);
