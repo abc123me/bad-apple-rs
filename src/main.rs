@@ -20,6 +20,7 @@ use image::RgbImage;
 
 // Standard crate
 use std::env::args;
+use std::error::Error;
 use std::fs::File;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -43,6 +44,34 @@ fn micros() -> u128 {
         .duration_since(UNIX_EPOCH)
         .expect("time should go forward");
     since_the_epoch.as_millis()
+}
+
+fn start_audio(frame_dir: String) -> Result<(), String> {
+    // get the output stream
+    let stream_handle = match rodio::OutputStreamBuilder::open_default_stream() {
+        Ok(val) => val,
+        Err(err) => {
+            return Err(format!(
+                "Failed to open default audio stream!\nError: {:?}",
+                err
+            ))
+        }
+    };
+    // get an audio sink from the stream
+    let sink = rodio::Sink::connect_new(&stream_handle.mixer());
+    // load the sound file
+    let file = match File::open(format!("{}/music.mp3", frame_dir)) {
+        Ok(val) => val,
+        Err(err) => return Err(format!("Failed to open audio file!\nError: {:?}", err)),
+    };
+    // decode the sound file
+    let source = match Decoder::try_from(file) {
+        Ok(val) => val,
+        Err(err) => return Err(format!("Failed to decode audio file!\nError: {:?}", err)),
+    };
+    // play the sound
+    stream_handle.mixer().add(source);
+    Ok(())
 }
 
 fn read_and_send_image() {}
@@ -142,17 +171,10 @@ fn main() {
         println!("[IMG Thread]: Stopped!");
     });
 
-    // Get an output stream handle to the default physical sound device.
-    // Note that the playback stops when the stream_handle is dropped.//!
-    let stream_handle =
-        rodio::OutputStreamBuilder::open_default_stream().expect("open default audio stream");
-    let sink = rodio::Sink::connect_new(&stream_handle.mixer());
-    // Load a sound from a file, using a path relative to Cargo.toml
-    let file = File::open(format!("{}/music.mp3", frame_dir)).unwrap();
-    // Decode that sound file into a source
-    let source = Decoder::try_from(file).unwrap();
-    // Play the sound directly on the device
-    stream_handle.mixer().add(source);
+    match start_audio(frame_dir) {
+        Ok(_) => println!("Audio playback started!"),
+        Err(str) => eprintln!("Audio playback failed! See error: {}", str),
+    }
 
     let mut cur_frame = 0;
     println!("[GFX Thread]: Started!");
