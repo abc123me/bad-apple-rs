@@ -8,6 +8,10 @@ features = ["fbdev", "img"]
 git = "https://github.com/abc123me/fbgl-rs.git"
 branch = "master"
 
+[dependencies.clap]
+features = ["derive"]
+version = "4.5.56"
+
 [dependencies]
 crossbeam = "0.8.4"
 framebuffer = "0.3.1"

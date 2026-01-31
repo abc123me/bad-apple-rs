@@ -1,14 +1,20 @@
 // Crates
+extern crate clap;
 extern crate crossbeam;
 extern crate framebuffer;
 extern crate image;
 extern crate rodio;
 
-// Rodio crate
-use rodio::{source::Source, Decoder, OutputStream};
+// Clap crate
+use clap::Parser;
 
 // Crossbeam crate
 use crossbeam::channel;
+
+// FBGL crate
+use fbgl::framebuffer::*;
+use fbgl::image::ImageOperations;
+use fbgl::*;
 
 // Framebuffer crate
 use framebuffer::{Framebuffer, KdMode};
@@ -18,17 +24,15 @@ use image::imageops::FilterType;
 use image::ImageReader;
 use image::RgbImage;
 
+// Rodio crate
+use rodio::{source::Source, Decoder, OutputStream};
+
 // Standard crate
 use std::env::args;
 use std::error::Error;
 use std::fs::File;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-// FBGL crate
-use fbgl::framebuffer::*;
-use fbgl::image::ImageOperations;
-use fbgl::*;
 
 fn millis() -> u128 {
     let start = SystemTime::now();
@@ -74,10 +78,39 @@ fn start_audio(frame_dir: String) -> Result<(), String> {
     Ok(())
 }
 
-fn read_and_send_image() {}
+#[derive(Parser, Debug)]
+#[command(
+    name = "bad-apple-rs",
+    version = "1.0",
+    about = "A rust program for playing bad apple on a TFT display"
+)]
+struct Args {
+    /// Directory to grab frames/music from
+    #[arg(short, long, default_value = "/usr/share/bad-apple/")]
+    directory: String,
+
+    /// The framerate to use, default of 60 is used
+    #[arg(long, default_value_t = 60)]
+    framerate: usize,
+
+    /// How many frames to preload, a zero value will use the framerate
+    /// You should make sure at least a second of video is loaded continuously
+    #[arg(long, default_value_t = 0)]
+    preload_frames: usize,
+
+    /// Total number of frames, for the bad apple example this was exactly 6571
+    #[arg(long, default_value_t = 6571)]
+    total_frames: usize,
+
+    /// Initial delay (in milliseconds) to wait for the first round of frames to be preloaded
+    /// This can be zero, but a non-zero value here lets the branch predictor to warm up
+    #[arg(long, default_value_t = 500)]
+    init_delay: u64,
+}
 
 fn main() {
-    let frame_dir = args().nth(1).unwrap_or("/usr/share/bad-apple".to_string());
+    let args = Args::parse();
+    let frame_dir = args.directory;
     println!("Using {} as frame directory!", frame_dir);
 
     let mut fb = Framebuffer::new("/dev/fb0").unwrap();
@@ -96,12 +129,12 @@ fn main() {
         gl.get_height()
     );
 
-    gl.clear(Color565::new(0, 0, 0));
-    gl.push_buffer();
-    std::thread::sleep(std::time::Duration::from_millis(1000));
-
-    let mut total_frames = 6570;
-    let mut preload_frames = 60; // Make sure at least a second of video is loaded continuously
+    let total_frames = args.total_frames;
+    let preload_frames = if args.preload_frames > 0 {
+        args.preload_frames
+    } else {
+        args.framerate
+    };
     let (img_tx, img_rx) = channel::bounded::<RgbImage>(preload_frames);
 
     let scale_w = gl.get_width() as u32;
@@ -161,27 +194,34 @@ fn main() {
                 cur_frame += 1;
             }
             println!(
-                "[IMG Thread]: Loaded frames {} to {}, took {}ms, io took {}us, decode took {}us, conversion took {}us",
+                "[IMG Thread]: Loaded frames {} to {}, took {}ms, io {}us, decode {}us, conversion {}us",
                 begin_frame,
                 cur_frame,
                 millis() - begin_ms, io_us, decode_us, conv_us
             );
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            if img_tx.len() >= preload_frames {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         }
         println!("[IMG Thread]: Stopped!");
     });
+
+    gl.clear(Color565::new(0, 0, 0));
+    gl.push_buffer();
+    std::thread::sleep(std::time::Duration::from_millis(args.init_delay));
 
     match start_audio(frame_dir) {
         Ok(_) => println!("Audio playback started!"),
         Err(str) => eprintln!("Audio playback failed! See error: {}", str),
     }
 
+    let frametime_ms = (1000 / args.framerate) as u128;
     let mut cur_frame = 0;
     println!("[GFX Thread]: Started!");
     let mut last_ms = 0;
     while cur_frame < total_frames {
         let cur_ms = millis();
-        if cur_ms > last_ms + 16 {
+        if cur_ms > last_ms + frametime_ms {
             last_ms = cur_ms;
 
             // a little over 60 fps
