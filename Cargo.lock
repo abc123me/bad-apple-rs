@@ -485,6 +485,7 @@ dependencies = [
 [[package]]
 name = "fbgl"
 version = "0.1.0"
+source = "git+https://github.com/abc123me/fbgl-rs.git?branch=master#bddd2b62ded3835edfc4a6a962976537c37f8c88"
 dependencies = [
  "framebuffer",
  "image",
