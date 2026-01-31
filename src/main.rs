@@ -25,12 +25,13 @@ use image::ImageReader;
 use image::RgbImage;
 
 // Rodio crate
-use rodio::{source::Source, Decoder, OutputStream};
+use rodio::{OutputStream, Sink};
 
 // Standard crate
 use std::env::args;
 use std::error::Error;
 use std::fs::File;
+use std::io::BufReader;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -50,9 +51,9 @@ fn micros() -> u128 {
     since_the_epoch.as_millis()
 }
 
-fn start_audio(frame_dir: String) -> Result<(), String> {
+fn play_audio(frame_dir: String) -> Result<(Sink, OutputStream), String> {
     // get the output stream
-    let stream_handle = match rodio::OutputStreamBuilder::open_default_stream() {
+    let mut stream_handle = match rodio::OutputStreamBuilder::open_default_stream() {
         Ok(val) => val,
         Err(err) => {
             return Err(format!(
@@ -61,21 +62,17 @@ fn start_audio(frame_dir: String) -> Result<(), String> {
             ))
         }
     };
-    // get an audio sink from the stream
-    let sink = rodio::Sink::connect_new(&stream_handle.mixer());
     // load the sound file
     let file = match File::open(format!("{}/music.mp3", frame_dir)) {
         Ok(val) => val,
         Err(err) => return Err(format!("Failed to open audio file!\nError: {:?}", err)),
     };
-    // decode the sound file
-    let source = match Decoder::try_from(file) {
+    // play the sound file
+    let sink = match rodio::play(stream_handle.mixer(), BufReader::new(file)) {
         Ok(val) => val,
-        Err(err) => return Err(format!("Failed to decode audio file!\nError: {:?}", err)),
+        Err(err) => return Err(format!("Failed to play audio file!\nError: {:?}", err)),
     };
-    // play the sound
-    stream_handle.mixer().add(source);
-    Ok(())
+    Ok((sink, stream_handle))
 }
 
 #[derive(Parser, Debug)]
@@ -210,10 +207,7 @@ fn main() {
     gl.push_buffer();
     std::thread::sleep(std::time::Duration::from_millis(args.init_delay));
 
-    match start_audio(frame_dir) {
-        Ok(_) => println!("Audio playback started!"),
-        Err(str) => eprintln!("Audio playback failed! See error: {}", str),
-    }
+    let audio_result = play_audio(frame_dir);
 
     let frametime_ms = (1000 / args.framerate) as u128;
     let mut cur_frame = 0;
@@ -247,6 +241,10 @@ fn main() {
     }
     println!("[GFX Thread]: Stopped!");
     img_handle.join().unwrap();
+    if let Ok((audio_sink, audio_stream)) = audio_result {
+        audio_sink.sleep_until_end();
+        drop(audio_stream);
+    }
 
     if gfx_mode.is_ok() {
         let _ = Framebuffer::set_kd_mode(KdMode::Text);
