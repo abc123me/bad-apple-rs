@@ -25,7 +25,7 @@ use image::ImageReader;
 use image::RgbImage;
 
 // Rodio crate
-use rodio::{OutputStream, Sink};
+use rodio::{Decoder, OutputStream, Sink};
 
 // Standard crate
 use std::env::args;
@@ -52,7 +52,7 @@ fn micros() -> u128 {
 }
 
 fn play_audio(frame_dir: String) -> Result<(Sink, OutputStream), String> {
-    // get the output stream
+    // Get the output stream
     let mut stream_handle = match rodio::OutputStreamBuilder::open_default_stream() {
         Ok(val) => val,
         Err(err) => {
@@ -62,14 +62,16 @@ fn play_audio(frame_dir: String) -> Result<(Sink, OutputStream), String> {
             ))
         }
     };
-    // load the sound file
+    // Load the sound file
     let file = match File::open(format!("{}/music.mp3", frame_dir)) {
         Ok(val) => val,
         Err(err) => return Err(format!("Failed to open audio file!\nError: {:?}", err)),
     };
-    // play the sound file
-    let sink = match rodio::play(stream_handle.mixer(), BufReader::new(file)) {
-        Ok(val) => val,
+    // Create a sink for the device
+    let sink = rodio::Sink::connect_new(&stream_handle.mixer());
+    // Decode and play the sound file
+    match Decoder::try_from(file) {
+        Ok(source) => stream_handle.mixer().add(source),
         Err(err) => return Err(format!("Failed to play audio file!\nError: {:?}", err)),
     };
     Ok((sink, stream_handle))
