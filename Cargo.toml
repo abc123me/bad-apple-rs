@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies.fbgl]
-path = "../fbgl-rs"
 features = ["fbdev", "img"]
+git = "https://github.com/abc123me/fbgl-rs.git"
+branch = "master"
 
 [dependencies]
 crossbeam = "0.8.4"
