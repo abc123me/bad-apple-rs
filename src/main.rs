@@ -118,7 +118,7 @@ fn start_img_thread(
                 // Convert the image into a displayable format
                 last_us = micros();
                 let img_send = img_result
-                    .resize_exact(opts.disp_w, opts.disp_h, FilterType::Nearest)
+                    .resize_exact(opts.disp_w, opts.disp_h, FilterType::Triangle)
                     .to_rgb8();
                 conv_us += micros() - last_us;
 
@@ -126,7 +126,8 @@ fn start_img_thread(
                 cur_frame += 1;
             }
             println!(
-                "[IMG Thread {}]: Loaded frames {} to {}, took {}ms, io {}us, decode {}us, conversion {}us", opts.thread_id,
+                "[IMG Thread {}]: Loaded frames {} to {}, took {}ms, io {}us, decode {}us, conversion {}us",
+                opts.thread_id,
                 begin_frame,
                 cur_frame,
                 millis() - begin_ms, io_us, decode_us, conv_us
@@ -197,6 +198,10 @@ struct Args {
     /// Frame formate to use
     #[arg(short, long, default_value = "jpg")]
     frame_format: String,
+
+    // Image thread count, 0 will use the number of cores on the system
+    #[arg(short, long, default_value_t = 0)]
+    threads: usize,
 }
 
 fn main() {
@@ -226,7 +231,11 @@ fn main() {
         args.framerate
     };
 
-    let img_thread_cnt = 2;
+    let img_thread_cnt = if args.threads == 0 {
+        thread::available_parallelism().unwrap().get()
+    } else {
+        args.threads
+    };
 
     let scale_w = gl.get_width() as u32;
     let scale_h = gl.get_height() as u32;
@@ -239,7 +248,7 @@ fn main() {
 
     // initialize an image threads for each channel
     for id in 0..img_thread_cnt {
-        let (img_tx, img_rx) = channel::bounded::<RgbImage>(preload_frames / img_thread_cnt);
+        let (img_tx, img_rx) = channel::bounded::<RgbImage>(10);
         img_rx_channels.push(img_rx);
         img_thread_handles.push(start_img_thread(
             ImageThreadOptions {
