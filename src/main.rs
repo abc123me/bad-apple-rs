@@ -32,6 +32,7 @@ use std::fs::File;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::vec::Vec;
 
 fn millis() -> u128 {
     let start = SystemTime::now();
@@ -57,15 +58,17 @@ struct ImageThreadOptions {
     frame_cnt: usize,
     frame_dir: String,
     frame_fmt: String,
+    thread_cnt: usize,
+    thread_id: usize,
 }
 
 fn start_img_thread(
     opts: ImageThreadOptions,
-    tx: channel::Sender<image::ImageBuffer<image::Rgb<u8>, std::vec::Vec<u8>>>,
+    tx: channel::Sender<image::ImageBuffer<image::Rgb<u8>, Vec<u8>>>,
 ) -> Result<JoinHandle<()>, std::io::Error> {
     thread::Builder::new().name("bad_apple_imgs".to_string()).spawn(move || {
         let mut cur_frame = opts.begin;
-        println!("[IMG Thread]: Started!");
+        println!("[IMG Thread {}]: Started!", opts.thread_id);
         'outer: while cur_frame < opts.frame_cnt {
             let begin_frame = cur_frame;
             let (begin_ms, mut io_us, mut conv_us, mut decode_us) = (millis(), 0, 0, 0);
@@ -73,6 +76,11 @@ fn start_img_thread(
                 let mut last_us;
                 if cur_frame >= opts.frame_cnt {
                     break;
+                }
+                if (cur_frame % opts.thread_cnt) != opts.thread_id {
+                    // skip this frame as it'll be handled by another thread
+                    cur_frame += 1;
+                    continue;
                 }
 
                 let img_fname = format!("{}/{:03}.{}", opts.frame_dir, cur_frame + 1, opts.frame_fmt);
@@ -83,10 +91,10 @@ fn start_img_thread(
                     Ok(rdr) => rdr,
                     Err(err) => {
                         eprintln!(
-                            "[IMG Thread]: Failed to load frame {} via {}",
-                            cur_frame, img_fname
+                            "[IMG Thread {}]: Failed to load frame {} via {}",
+                            opts.thread_id, cur_frame, img_fname
                         );
-                        eprintln!("[IMG Thread]: Error: {:?}", err);
+                        eprintln!("[IMG Thread {}]: Error: {:?}", opts.thread_id, err);
                         break 'outer;
                     }
                 };
@@ -98,10 +106,10 @@ fn start_img_thread(
                     Ok(res) => res,
                     Err(err) => {
                         eprintln!(
-                            "[IMG Thread]: Failed to decode frame {} via {}",
+                            "[IMG Thread {}]: Failed to decode frame {} via {}", opts.thread_id,
                             cur_frame, img_fname
                         );
-                        eprintln!("[IMG Thread]: Error: {:?}", err);
+                        eprintln!("[IMG Thread {}]: Error: {:?}", opts.thread_id, err);
                         break 'outer;
                     }
                 };
@@ -114,11 +122,11 @@ fn start_img_thread(
                     .to_rgb8();
                 conv_us += micros() - last_us;
 
-                tx.send(img_send).expect("[IMG Thread]: Failed to send image through channel?!");
+                tx.send(img_send).expect(&format!("[IMG Thread {}]: Failed to send image through channel?!", opts.thread_id).to_string());
                 cur_frame += 1;
             }
             println!(
-                "[IMG Thread]: Loaded frames {} to {}, took {}ms, io {}us, decode {}us, conversion {}us",
+                "[IMG Thread {}]: Loaded frames {} to {}, took {}ms, io {}us, decode {}us, conversion {}us", opts.thread_id,
                 begin_frame,
                 cur_frame,
                 millis() - begin_ms, io_us, decode_us, conv_us
@@ -127,7 +135,7 @@ fn start_img_thread(
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
-        println!("[IMG Thread]: Stopped!");
+        println!("[IMG Thread {}]: Stopped!", opts.thread_id);
     })
 }
 
@@ -217,23 +225,37 @@ fn main() {
     } else {
         args.framerate
     };
-    let (img_tx, img_rx) = channel::bounded::<RgbImage>(preload_frames);
+
+    let img_thread_cnt = 2;
 
     let scale_w = gl.get_width() as u32;
     let scale_h = gl.get_height() as u32;
 
-    let img_handle = start_img_thread(
-        ImageThreadOptions {
-            disp_w: scale_w,
-            disp_h: scale_h,
-            begin: 0,
-            frame_cnt: total_frames,
-            preload: preload_frames,
-            frame_dir: args.directory.clone(),
-            frame_fmt: args.frame_format.clone(),
-        },
-        img_tx,
-    );
+    // allocate vecs for each image thread and it's channel'
+    let mut img_rx_channels: Vec<channel::Receiver<image::ImageBuffer<image::Rgb<u8>, Vec<u8>>>> =
+        Vec::with_capacity(img_thread_cnt);
+    let mut img_thread_handles: Vec<Result<JoinHandle<()>, std::io::Error>> =
+        Vec::with_capacity(img_thread_cnt);
+
+    // initialize an image threads for each channel
+    for id in 0..img_thread_cnt {
+        let (img_tx, img_rx) = channel::bounded::<RgbImage>(preload_frames / img_thread_cnt);
+        img_rx_channels.push(img_rx);
+        img_thread_handles.push(start_img_thread(
+            ImageThreadOptions {
+                disp_w: scale_w,
+                disp_h: scale_h,
+                begin: 0,
+                frame_cnt: total_frames,
+                preload: preload_frames,
+                frame_dir: args.directory.clone(),
+                frame_fmt: args.frame_format.clone(),
+                thread_cnt: img_thread_cnt,
+                thread_id: id,
+            },
+            img_tx,
+        ));
+    }
 
     gl.clear(Color565::new(0, 0, 0));
     gl.push_buffer();
@@ -251,7 +273,7 @@ fn main() {
             last_ms = cur_ms;
 
             // a little over 60 fps
-            match img_rx.try_recv() {
+            match img_rx_channels[cur_frame % img_thread_cnt].try_recv() {
                 Ok(img) => {
                     //println!("[GFX Thread]: Drawing frame {}!", cur_frame);
                     gl.draw_image_rgb(0, 0, &img);
@@ -272,10 +294,12 @@ fn main() {
         }
     }
     println!("[GFX Thread]: Stopped!");
-    img_handle
-        .expect("the thread has been built")
-        .join()
-        .unwrap();
+    for img_handle in img_thread_handles {
+        img_handle
+            .expect("the thread has been built")
+            .join()
+            .unwrap();
+    }
     if let Ok((audio_sink, audio_stream)) = audio_result {
         audio_sink.sleep_until_end();
         drop(audio_stream);
