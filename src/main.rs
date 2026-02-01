@@ -56,6 +56,7 @@ struct ImageThreadOptions {
     begin: usize,
     frame_cnt: usize,
     frame_dir: String,
+    frame_fmt: String,
 }
 
 fn start_img_thread(
@@ -74,7 +75,7 @@ fn start_img_thread(
                     break;
                 }
 
-                let img_fname = format!("{}/{:03}.jpg", opts.frame_dir, cur_frame + 1);
+                let img_fname = format!("{}/{:03}.{}", opts.frame_dir, cur_frame + 1, opts.frame_fmt);
 
                 // Open and read the image
                 last_us = micros();
@@ -124,8 +125,6 @@ fn start_img_thread(
             );
             if tx.len() >= opts.preload {
                 std::thread::sleep(std::time::Duration::from_millis(100));
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
         println!("[IMG Thread]: Stopped!");
@@ -186,12 +185,15 @@ struct Args {
     /// This can be zero, but a non-zero value here lets the branch predictor to warm up
     #[arg(long, default_value_t = 500)]
     init_delay: u64,
+
+    /// Frame formate to use
+    #[arg(short, long, default_value = "jpg")]
+    frame_format: String,
 }
 
 fn main() {
     let args = Args::parse();
-    let frame_dir = args.directory;
-    println!("Using {} as frame directory!", frame_dir);
+    println!("Using {} as frame directory!", args.directory);
 
     let mut fb = Framebuffer::new("/dev/fb0").unwrap();
     let gfx_mode = Framebuffer::set_kd_mode(KdMode::Graphics);
@@ -227,7 +229,8 @@ fn main() {
             begin: 0,
             frame_cnt: total_frames,
             preload: preload_frames,
-            frame_dir: frame_dir.clone(),
+            frame_dir: args.directory.clone(),
+            frame_fmt: args.frame_format.clone(),
         },
         img_tx,
     );
@@ -236,7 +239,7 @@ fn main() {
     gl.push_buffer();
     std::thread::sleep(std::time::Duration::from_millis(args.init_delay));
 
-    let audio_result = play_audio(frame_dir);
+    let audio_result = play_audio(args.directory);
 
     let frametime_ms = (1000 / args.framerate) as u128;
     let mut cur_frame = 0;
