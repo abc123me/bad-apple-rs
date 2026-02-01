@@ -75,10 +75,11 @@ fn start_img_thread(
             while tx.len() < opts.preload {
                 let mut last_us;
                 if cur_frame >= opts.frame_cnt {
+                    // stop, we have loaded all the frames!
                     break;
                 }
                 if (cur_frame % opts.thread_cnt) != opts.thread_id {
-                    // skip this frame as it'll be handled by another thread
+                    // skip this frame since it'll be handled by another thread
                     cur_frame += 1;
                     continue;
                 }
@@ -122,7 +123,7 @@ fn start_img_thread(
                     .to_rgb8();
                 conv_us += micros() - last_us;
 
-                tx.send(img_send).expect(&format!("[IMG Thread {}]: Failed to send image through channel?!", opts.thread_id).to_string());
+                tx.send(img_send).unwrap_or_else(|_| panic!("{}", format!("[IMG Thread {}]: Failed to send image through channel?!", opts.thread_id).to_string()));
                 cur_frame += 1;
             }
             println!(
@@ -132,8 +133,10 @@ fn start_img_thread(
                 cur_frame,
                 millis() - begin_ms, io_us, decode_us, conv_us
             );
-            if tx.len() >= opts.preload {
+            if tx.len() > opts.preload / 2 {
                 std::thread::sleep(std::time::Duration::from_millis(100));
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
         println!("[IMG Thread {}]: Stopped!", opts.thread_id);
@@ -248,7 +251,8 @@ fn main() {
 
     // initialize an image threads for each channel
     for id in 0..img_thread_cnt {
-        let (img_tx, img_rx) = channel::bounded::<RgbImage>(10);
+        let actual_preload_frames = preload_frames / img_thread_cnt;
+        let (img_tx, img_rx) = channel::bounded::<RgbImage>(actual_preload_frames);
         img_rx_channels.push(img_rx);
         img_thread_handles.push(start_img_thread(
             ImageThreadOptions {
@@ -256,7 +260,7 @@ fn main() {
                 disp_h: scale_h,
                 begin: 0,
                 frame_cnt: total_frames,
-                preload: preload_frames,
+                preload: actual_preload_frames,
                 frame_dir: args.directory.clone(),
                 frame_fmt: args.frame_format.clone(),
                 thread_cnt: img_thread_cnt,
