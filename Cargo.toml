@@ -1,19 +1,26 @@
 [package]
 name = "bad-apple-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
+
+[features]
+default = []
+audio = [ "rodio" ]
 
 [dependencies.fbgl]
 features = ["fbdev", "img"]
 git = "https://github.com/abc123me/fbgl-rs.git"
-branch = "master"
+tag = "v0.2.3"
 
 [dependencies.clap]
 features = ["derive"]
 version = "4.5.56"
 
+[dependencies.rodio]
+version = "0.21.1"
+optional = true
+
 [dependencies]
 crossbeam = "0.8.4"
 framebuffer = "0.3.1"
 image = "0.25.9"
-rodio = "0.21.1"

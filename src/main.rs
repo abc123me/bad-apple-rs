@@ -1,10 +1,3 @@
-// Crates
-extern crate clap;
-extern crate crossbeam;
-extern crate framebuffer;
-extern crate image;
-extern crate rodio;
-
 // Clap crate
 use clap::Parser;
 
@@ -12,12 +5,14 @@ use clap::Parser;
 use crossbeam::channel;
 
 // FBGL crate
-use fbgl::framebuffer::*;
+use fbgl::colors::{Color565, ReprColor};
 use fbgl::image::ImageOperations;
-use fbgl::*;
+use fbgl::renderers::fb::DirectFramebufferRenderer;
+use fbgl::renderers::heap::HeapBuffer;
+use fbgl::renderers::{BufferedRenderer, GraphicsOperations, GraphicsRenderer};
 
 // Framebuffer crate
-use framebuffer::{Framebuffer, KdMode};
+use framebuffer::Framebuffer;
 
 // Image crate
 use image::imageops::FilterType;
@@ -25,6 +20,7 @@ use image::ImageReader;
 use image::RgbImage;
 
 // Rodio crate
+#[cfg(feature = "audio")]
 use rodio::{Decoder, OutputStream, Sink};
 
 // Standard crate
@@ -143,6 +139,7 @@ fn start_img_thread(
     })
 }
 
+#[cfg(feature = "audio")]
 fn play_audio(frame_dir: String) -> Result<(Sink, OutputStream), String> {
     // Get the output stream
     let stream_handle = match rodio::OutputStreamBuilder::open_default_stream() {
@@ -212,13 +209,9 @@ fn main() {
     println!("Using {} as frame directory!", args.directory);
 
     let mut fb = Framebuffer::new("/dev/fb0").unwrap();
-    let gfx_mode = Framebuffer::set_kd_mode(KdMode::Graphics);
-    if gfx_mode.is_err() {
-        println!("Failed to set graphics mode on framebuffer!");
-    }
 
-    let mut gl = BufferedRenderer::<DirectFramebufferRenderer<Color565>>::new(
-        DirectFramebufferRenderer::<Color565>::new(&mut fb).unwrap(),
+    let mut gl = HeapBuffer::<DirectFramebufferRenderer<Color565>>::new(
+        DirectFramebufferRenderer::<Color565>::new(fb).unwrap(),
     );
 
     println!(
@@ -274,6 +267,7 @@ fn main() {
     gl.push_buffer();
     std::thread::sleep(std::time::Duration::from_millis(args.init_delay));
 
+    #[cfg(feature = "audio")]
     let audio_result = play_audio(args.directory);
 
     let frametime_ms = (1000 / args.framerate) as u128;
@@ -313,12 +307,10 @@ fn main() {
             .join()
             .unwrap();
     }
+
+    #[cfg(feature = "audio")]
     if let Ok((audio_sink, audio_stream)) = audio_result {
         audio_sink.sleep_until_end();
         drop(audio_stream);
-    }
-
-    if gfx_mode.is_ok() {
-        let _ = Framebuffer::set_kd_mode(KdMode::Text);
     }
 }
